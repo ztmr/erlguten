@@ -70,6 +70,7 @@
          scale/3,
          set_author/2,
          set_char_space/2,
+         set_creator/2,
          set_dash/2, set_dash/3,
          set_date/4,
          set_fill_color/2, set_fill_color_CMYK/5, set_fill_color_RGB/4,
@@ -82,6 +83,7 @@
          set_miter_limit/2,
          set_page/2,
          set_pagesize/2, set_pagesize/3,
+         set_producer/2,
          set_stroke_color/2, set_stroke_color_CMYK/5, set_stroke_color_RGB/4,
          set_stroke_gray/2,
          set_subject/2,
@@ -182,6 +184,16 @@ get_page_no(PID)->
 
 set_author(PID,Author)->
       gen_server:cast(PID, {info, {author, Author}} ).
+
+%% @doc set the Producer atribute of the PDF
+
+set_producer(PID,Producer)->
+      gen_server:cast(PID, {info, {producer, Producer}} ).
+
+%% @doc set the Creator atribute of the PDF
+
+set_creator(PID,Creator)->
+      gen_server:cast(PID, {info, {creator, Creator}} ).
       
 %% @doc set the Title atribute of the PDF
 
@@ -1158,6 +1170,10 @@ imageBC(Ncomp,{B,_C}) when Ncomp > 2 -> {B,imagec}.
 
 pdf_handle_info(I,{author,Author})->
     I#info{author=Author};
+pdf_handle_info(I,{producer,Producer})->
+    I#info{producer=Producer};
+pdf_handle_info(I,{creator,Creator})->
+    I#info{creator=Creator};
 pdf_handle_info(I,{title,Title}) ->
     I#info{title=Title};
 pdf_handle_info(I,{subject,Subject}) ->
