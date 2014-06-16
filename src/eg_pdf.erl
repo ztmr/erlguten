@@ -126,7 +126,7 @@ init_pdf_context()->
 
 %% @doc Spawn pdf building process
 new()->
-    io:format("New pdf~n",[]),
+    %io:format("New pdf~n",[]),
     {ok, PDF} = start_link( [init_pdf_context(), <<>>] ),
     PDF.
 
@@ -756,30 +756,38 @@ build_pdf(Info, Fonts, Images, Pages, MediaBox, ProcSet) ->
     %% io:format("Free1=~p~n",[Free1]),
     NInfo = Free1 + 1,
     O5 = {{obj,NInfo,0}, mkInfo(Info)},
+    %io:format ("~p~n", [{Root, NInfo, O0s ++ O1s ++ [O2|O3s] ++ [O4,O5]}]),
     {Root, NInfo, O0s ++ O1s ++ [O2|O3s] ++ [O4,O5]}.
     
-mk_fonts([], I, Fs, Os) -> 
+mk_fonts(Handlers, I, Fs, E) ->
+    X = {{obj,I,0},
+         {dict, [
+            {"Differences", eg_latin2:gen_diffs ()},
+            {"BaseEncoding", {name, "MacRomanEncoding"}}]}},
+    mk_fonts_(Handlers, I+1, Fs, lists:reverse ([X|lists:reverse (E)]), I).
+
+mk_fonts_([], I, Fs, Os, _Enc) -> 
     A = {{obj,I,0},{dict,lists:map(fun({Alias, FontObj}) ->
 		      {Alias, {ptr,FontObj,0}}
 	      end, lists:reverse(Fs))}},
     {I+1, {ptr,I,0}, lists:reverse([A|Os])};
-mk_fonts([Handler|T], I, Fs, E) ->
+mk_fonts_([Handler|T], I, Fs, E, Enc) ->
     %% io:format("I need the font:~p~n",[Handler]),
     Index = Handler:index(),
     Alias = "F" ++ eg_pdf_op:i2s(Index),
     case Handler:type() of
 	internal ->
-	    O = {{obj,I,0},mkFont(Handler)},
-	    mk_fonts(T, I+1, [{Alias,I}|Fs], [O|E]);
+      O = {{obj,I,0},mkFont(Handler, {ptr, Enc, 0})},
+	    mk_fonts_(T, I+1, [{Alias,I}|Fs], [O|E], Enc);
 	{Index, pdf_builtin} ->
 	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index)},
 	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, false, 0)},
-	    mk_fonts(T, I+2, [{Alias,I}|Fs], [O2,O1|E]);
+	    mk_fonts_(T, I+2, [{Alias,I}|Fs], [O2,O1|E], Enc);
 	external ->
 	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index)},
 	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, true,I+2)},
 	    O3 = {{obj,I+2,0}, mkFontFile(Handler)},
-	    mk_fonts(T, I+3, [{Alias,I}|Fs], [O3,O2,O1|E])
+	    mk_fonts_(T, I+3, [{Alias,I}|Fs], [O3,O2,O1|E], Enc)
     end.
 
 mk_pages([], _, N, P, O) -> {N, lists:reverse(P), lists:reverse(O)};
@@ -798,7 +806,10 @@ mkCatalogue(PageTree) ->
 	   {"Pages",{ptr,PageTree,0}}]}.
 
 %% mkFont is used for the 14  inbuilt fonts
-mkFont(FontHandler) ->
+%mkFont(FontHandler) ->
+%    mkFont(FontHandler, {name, encoding(FontHandler)}).
+
+mkFont(FontHandler, Enc) ->
     Index = FontHandler:index(),
     Alias = "F" ++ eg_pdf_op:i2s(Index),
     %% io:format("mkFont Alias=~s FontHandler=~p~n",[Alias, FontHandler]),
@@ -806,7 +817,7 @@ mkFont(FontHandler) ->
 	   {"Subtype",{name,"Type1"}},
 	   {"Name",{name,Alias}},
 	   {"BaseFont",{name,FontHandler:fontName()}},
-	   {"Encoding",{name,encoding(FontHandler)}}]}.
+     {"Encoding",Enc}]}.
 
 encoding(M) ->
     %% Change the encoding to "MacRomanEncoding" except for
