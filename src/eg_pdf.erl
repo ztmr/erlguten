@@ -119,6 +119,7 @@ init_pdf_context()->
 			   keywords="ErlangKeyword"},
 		images=dict:new(),
 		fonts=[],
+    convertMode = 'utf8_to_latin2',
 		currentpage=1,
 		mediabox=pagesize(a4)}.
 
@@ -683,7 +684,10 @@ handle_cast({info,Info}, [PDFC, Stream]) ->
 	    {noreply,  [PDFC#pdfContext{info=NewInfo}, Stream]};
 	          
 handle_cast({stream, {append, String}}, [PDFC, Stream]) ->	    
-	    B = list_to_binary(convert(PDFC#pdfContext.font_handler, String)),
+	    B = case PDFC#pdfContext.convertMode of
+        'utf8_to_latin2' -> list_to_binary(eg_latin2:encode_from_utf8(String));
+        _                -> list_to_binary(convert(PDFC#pdfContext.font_handler, String))
+      end,
 	    Binary = <<Stream/binary, B/binary, <<" ">>/binary>>,
 	    {noreply, [PDFC, Binary]};
 	     
@@ -742,10 +746,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%--------------------------------------------------------------------
 
-build_pdf(Info, Fonts, Images, Pages, MediaBox, ProcSet) ->
+build_pdf(Info, Fonts, Images, Pages, MediaBox, ProcSet, ConvertMode) ->
     %% io:format("build pdf Fonts=~p~n",[Fonts]),
     {Free0,XObjects,O0s}  = eg_pdf_image:mk_images(Images, 1, [], []),
-    {Free,Fonts1,O1s}  = mk_fonts(Fonts, Free0, [], []),
+    {Free,Fonts1,O1s}  = mk_fonts(Fonts, Free0, [], [], ConvertMode),
     PageTree = Free,
     {Free1,Ps,O3s} = mk_pages(Pages, PageTree, Free+1,[],[]),
     %% io:format("here2:~p~n",[O3s]),
@@ -759,35 +763,38 @@ build_pdf(Info, Fonts, Images, Pages, MediaBox, ProcSet) ->
     %io:format ("~p~n", [{Root, NInfo, O0s ++ O1s ++ [O2|O3s] ++ [O4,O5]}]),
     {Root, NInfo, O0s ++ O1s ++ [O2|O3s] ++ [O4,O5]}.
     
-mk_fonts(Handlers, I, Fs, E) ->
+mk_fonts(Handlers, I, Fs, E, 'utf8_to_latin2' = ConvertMode) ->
     X = {{obj,I,0},
          {dict, [
             {"Differences", eg_latin2:gen_diffs ()},
+            {"Type", {name, "Encoding"}},
             {"BaseEncoding", {name, "MacRomanEncoding"}}]}},
-    mk_fonts_(Handlers, I+1, Fs, lists:reverse ([X|lists:reverse (E)]), I).
+    mk_fonts_(Handlers, I+1, Fs, lists:reverse ([X|lists:reverse (E)]), I, ConvertMode);
+mk_fonts(Handlers, I, Fs, E, ConvertMode) ->
+    mk_fonts_(Handlers, I, Fs, E, undefined, ConvertMode).
 
-mk_fonts_([], I, Fs, Os, _Enc) -> 
+mk_fonts_([], I, Fs, Os, _Enc, _ConvertMode) -> 
     A = {{obj,I,0},{dict,lists:map(fun({Alias, FontObj}) ->
 		      {Alias, {ptr,FontObj,0}}
 	      end, lists:reverse(Fs))}},
     {I+1, {ptr,I,0}, lists:reverse([A|Os])};
-mk_fonts_([Handler|T], I, Fs, E, Enc) ->
+mk_fonts_([Handler|T], I, Fs, E, Enc, ConvertMode) ->
     %% io:format("I need the font:~p~n",[Handler]),
     Index = Handler:index(),
     Alias = "F" ++ eg_pdf_op:i2s(Index),
     case Handler:type() of
 	internal ->
-      O = {{obj,I,0},mkFont(Handler, {ptr, Enc, 0})},
-	    mk_fonts_(T, I+1, [{Alias,I}|Fs], [O|E], Enc);
+      O = {{obj,I,0},mkFont(Handler, {ptr, Enc, 0}, ConvertMode)},
+	    mk_fonts_(T, I+1, [{Alias,I}|Fs], [O|E], Enc, ConvertMode);
 	{Index, pdf_builtin} ->
-	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index)},
+	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index, ConvertMode)},
 	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, false, 0)},
-	    mk_fonts_(T, I+2, [{Alias,I}|Fs], [O2,O1|E], Enc);
+	    mk_fonts_(T, I+2, [{Alias,I}|Fs], [O2,O1|E], Enc, ConvertMode);
 	external ->
-	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index)},
+	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index, ConvertMode)},
 	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, true,I+2)},
 	    O3 = {{obj,I+2,0}, mkFontFile(Handler)},
-	    mk_fonts_(T, I+3, [{Alias,I}|Fs], [O3,O2,O1|E], Enc)
+	    mk_fonts_(T, I+3, [{Alias,I}|Fs], [O3,O2,O1|E], Enc, ConvertMode)
     end.
 
 mk_pages([], _, N, P, O) -> {N, lists:reverse(P), lists:reverse(O)};
@@ -806,17 +813,22 @@ mkCatalogue(PageTree) ->
 	   {"Pages",{ptr,PageTree,0}}]}.
 
 %% mkFont is used for the 14  inbuilt fonts
-%mkFont(FontHandler) ->
-%    mkFont(FontHandler, {name, encoding(FontHandler)}).
-
-mkFont(FontHandler, Enc) ->
+mkFont(FontHandler, undefined, ConvertMode) ->
+    mkFont(FontHandler, {name, encoding(FontHandler)}, ConvertMode);
+mkFont(FontHandler, Enc, ConvertMode) ->
     Index = FontHandler:index(),
     Alias = "F" ++ eg_pdf_op:i2s(Index),
+    FirstChar = FontHandler:firstChar(),
+    LastChar = FontHandler:lastChar(),
+    Widths = make_width(FontHandler:encoding(),FontHandler,FirstChar,LastChar,ConvertMode),
     %% io:format("mkFont Alias=~s FontHandler=~p~n",[Alias, FontHandler]),
     {dict,[{"Type",{name,"Font"}},
 	   {"Subtype",{name,"Type1"}},
 	   {"Name",{name,Alias}},
 	   {"BaseFont",{name,FontHandler:fontName()}},
+	   {"FirstChar",FirstChar},
+	   {"LastChar",LastChar},
+	   {"Widths", {array,Widths}},
      {"Encoding",Enc}]}.
 
 encoding(M) ->
@@ -842,10 +854,10 @@ encoding(M) ->
 	    "MacRomanEncoding"
     end.
 
-mkFont1(M, FontDescriptorPrt, Index) ->
+mkFont1(M, FontDescriptorPrt, Index, ConvertMode) ->
     FirstChar = M:firstChar(),
     LastChar = M:lastChar(),
-    Widths = make_width(M:encoding(),M,FirstChar,LastChar),
+    Widths = make_width(M:encoding(),M,FirstChar,LastChar,ConvertMode),
     {dict,[{"Type",{name,"Font"}},
 	   {"Subtype",{name,"Type1"}},
 	   {"Name",{name,"F" ++ eg_pdf_op:i2s(Index)}},
@@ -856,14 +868,20 @@ mkFont1(M, FontDescriptorPrt, Index) ->
 	   {"Widths", {array,Widths}},
 	   {"FontDescriptor",{ptr,FontDescriptorPrt,0}}]}.
 
-make_width("AdobeStandardEncoding", M, F, L) ->
+make_width(_, M, F, L, 'utf8_to_latin2' = _ConvertMode) ->
+    %io:format ("WIDTH1 => ~p~n", [{M,F,L,_ConvertMode}]),
+    Seq = lists:seq (F, L),
+    [ eg_latin2:fix_width (X, M) || X <- Seq ];
+make_width("AdobeStandardEncoding", M, F, L, _ConvertMode) ->
+    %io:format ("WIDTH2 => ~p~n", [{M,F,L,_ConvertMode}]),
     Seq = lists:seq(F,L),
     Fu = fun(unknown) -> 0;
 	   (X) -> X
 	end,
     Map = eg_convert:mac2pdf(Seq),
     [Fu(M:width(X)) || X <- Map];
-make_width(_, M, _, _) ->
+make_width(_, M, _F, _L, _ConvertMode) ->
+    %io:format ("WIDTH3 => ~p~n", [{M,_F,_L,_ConvertMode}]),
     M:widths().
 
 mkFontDescriptor(M, Embedded, I) ->
@@ -1087,7 +1105,8 @@ handle_export(PDFC)->
 		  dict:to_list(PDFC#pdfContext.images),
 		  Pages,
 		  PDFC#pdfContext.mediabox,
-		  PDFC#pdfContext.procset),
+		  PDFC#pdfContext.procset,
+      PDFC#pdfContext.convertMode),
     eg_pdf_lib:export(Ninfo, Os).
 %%    Objs = lists:map(fun(I) -> serialise2bin(I) end , Os),
 %%    eg_pdf_export:mkdoc(Objs, Root, Ninfo).

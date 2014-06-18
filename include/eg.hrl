@@ -56,6 +56,7 @@
 	  pages=[],
 	  scripts=[],
 	  mediabox,
+    convertMode,
 	  procset={undefined,undefined}  %% { imageb,imagec }
 	 }).
 
