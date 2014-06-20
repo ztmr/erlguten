@@ -9,6 +9,8 @@
 -module (eg_latin2).
 -export ([gen_diffs/0, encode_from_utf8/1, fix_width/2]).
 
+%% Note: shouldn't the correction be specific to a font-type?
+%% (For example, we should not override widths of monospace fonts.)
 utf8_to_il2 (283) -> {236, 'ecaron',    1.000, $e};
 utf8_to_il2 (353) -> {185, 'scaron',    1.000, $s};
 utf8_to_il2 (269) -> {232, 'ccaron',    1.000, $c};
