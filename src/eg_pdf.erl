@@ -750,6 +750,7 @@ build_pdf(Info, Fonts, Images, Pages, MediaBox, ProcSet, ConvertMode) ->
     %% io:format("build pdf Fonts=~p~n",[Fonts]),
     {Free0,XObjects,O0s}  = eg_pdf_image:mk_images(Images, 1, [], []),
     {Free,Fonts1,O1s}  = mk_fonts(Fonts, Free0, [], [], ConvertMode),
+    %io:format ("FONTS: ~p~n", [{Free, Fonts1, O1s}]),
     PageTree = Free,
     {Free1,Ps,O3s} = mk_pages(Pages, PageTree, Free+1,[],[]),
     %% io:format("here2:~p~n",[O3s]),
@@ -763,39 +764,8 @@ build_pdf(Info, Fonts, Images, Pages, MediaBox, ProcSet, ConvertMode) ->
     %io:format ("~p~n", [{Root, NInfo, O0s ++ O1s ++ [O2|O3s] ++ [O4,O5]}]),
     {Root, NInfo, O0s ++ O1s ++ [O2|O3s] ++ [O4,O5]}.
     
-mk_fonts(Handlers, I, Fs, E, 'utf8_to_latin2' = ConvertMode) ->
-    X = {{obj,I,0},
-         {dict, [
-            {"Differences", eg_latin2:gen_diffs ()},
-            {"Type", {name, "Encoding"}},
-            {"BaseEncoding", {name, "MacRomanEncoding"}}]}},
-    mk_fonts_(Handlers, I+1, Fs, lists:reverse ([X|lists:reverse (E)]), I, ConvertMode);
 mk_fonts(Handlers, I, Fs, E, ConvertMode) ->
-    mk_fonts_(Handlers, I, Fs, E, undefined, ConvertMode).
-
-mk_fonts_([], I, Fs, Os, _Enc, _ConvertMode) -> 
-    A = {{obj,I,0},{dict,lists:map(fun({Alias, FontObj}) ->
-		      {Alias, {ptr,FontObj,0}}
-	      end, lists:reverse(Fs))}},
-    {I+1, {ptr,I,0}, lists:reverse([A|Os])};
-mk_fonts_([Handler|T], I, Fs, E, Enc, ConvertMode) ->
-    %% io:format("I need the font:~p~n",[Handler]),
-    Index = Handler:index(),
-    Alias = "F" ++ eg_pdf_op:i2s(Index),
-    case Handler:type() of
-	internal ->
-      O = {{obj,I,0},mkFont(Handler, {ptr, Enc, 0}, ConvertMode)},
-	    mk_fonts_(T, I+1, [{Alias,I}|Fs], [O|E], Enc, ConvertMode);
-	{Index, pdf_builtin} ->
-	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index, ConvertMode)},
-	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, false, 0)},
-	    mk_fonts_(T, I+2, [{Alias,I}|Fs], [O2,O1|E], Enc, ConvertMode);
-	external ->
-	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index, ConvertMode)},
-	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, true,I+2)},
-	    O3 = {{obj,I+2,0}, mkFontFile(Handler)},
-	    mk_fonts_(T, I+3, [{Alias,I}|Fs], [O3,O2,O1|E], Enc, ConvertMode)
-    end.
+  eg_pdf_obj:mk_fonts (Handlers, I, Fs, E, ConvertMode).
 
 mk_pages([], _, N, P, O) -> {N, lists:reverse(P), lists:reverse(O)};
 mk_pages([{page,Str}|T], Parent, I, L, E) ->
@@ -811,152 +781,6 @@ mk_pages([{page,Str,Script}|T], Parent, I, L, E) ->
 mkCatalogue(PageTree) ->
     {dict,[{"Type",{name,"Catalog"}},
 	   {"Pages",{ptr,PageTree,0}}]}.
-
-%% mkFont is used for the 14  inbuilt fonts
-mkFont(FontHandler, undefined, ConvertMode) ->
-    mkFont(FontHandler, {name, encoding(FontHandler)}, ConvertMode);
-mkFont(FontHandler, Enc, ConvertMode) ->
-    Index = FontHandler:index(),
-    Alias = "F" ++ eg_pdf_op:i2s(Index),
-    FirstChar = FontHandler:firstChar(),
-    LastChar = FontHandler:lastChar(),
-    Widths = make_width(FontHandler:encoding(),FontHandler,FirstChar,LastChar,ConvertMode),
-    %% io:format("mkFont Alias=~s FontHandler=~p~n",[Alias, FontHandler]),
-    {dict,[{"Type",{name,"Font"}},
-	   {"Subtype",{name,"Type1"}},
-	   {"Name",{name,Alias}},
-	   {"BaseFont",{name,FontHandler:fontName()}},
-	   {"FirstChar",FirstChar},
-	   {"LastChar",LastChar},
-	   {"Widths", {array,Widths}},
-     {"Encoding",Enc}]}.
-
-encoding(M) ->
-    %% Change the encoding to "MacRomanEncoding" except for
-    %% "FontSpecific" encodings ...
-    %% This seems to work for everything except those fonts
-    %% which have a "FontSpecif" encoding.
-    %% *usally the encoding in the AFM file is 
-    %% "AdobeStandardEncoding" - but this gives an error
-    %% for fonts with encoding "AppleStandard". Setting
-    %% *everything* to MacRomanEncoding seems to work for all cases
-    %% except Zapfdingblats which is "FontSpecific"
-    %% - this might not work with files produced on an apple ?
-    %% - I have not yet tested this on an apple
-    case M:encoding() of
-	S = "FontSpecific" ->
-	    S;
-%   	S = "AppleStandard" ->
-%   	    "MacRomanEncoding";
-%   	S = "AdobeStandardEncoding" ->
-%   	    S;
-	_ ->
-	    "MacRomanEncoding"
-    end.
-
-mkFont1(M, FontDescriptorPrt, Index, ConvertMode) ->
-    FirstChar = M:firstChar(),
-    LastChar = M:lastChar(),
-    Widths = make_width(M:encoding(),M,FirstChar,LastChar,ConvertMode),
-    {dict,[{"Type",{name,"Font"}},
-	   {"Subtype",{name,"Type1"}},
-	   {"Name",{name,"F" ++ eg_pdf_op:i2s(Index)}},
-	   {"BaseFont",{name,M:fontName()}},
-	   {"Encoding",{name,encoding(M)}},
-	   {"FirstChar",FirstChar},
-	   {"LastChar",LastChar},
-	   {"Widths", {array,Widths}},
-	   {"FontDescriptor",{ptr,FontDescriptorPrt,0}}]}.
-
-make_width(_, M, F, L, 'utf8_to_latin2' = _ConvertMode) ->
-    %io:format ("WIDTH1 => ~p~n", [{M,F,L,_ConvertMode}]),
-    Seq = lists:seq (F, L),
-    [ eg_latin2:fix_width (X, M) || X <- Seq ];
-make_width("AdobeStandardEncoding", M, F, L, _ConvertMode) ->
-    %io:format ("WIDTH2 => ~p~n", [{M,F,L,_ConvertMode}]),
-    Seq = lists:seq(F,L),
-    Fu = fun(unknown) -> 0;
-	   (X) -> X
-	end,
-    Map = eg_convert:mac2pdf(Seq),
-    [Fu(M:width(X)) || X <- Map];
-make_width(_, M, _F, _L, _ConvertMode) ->
-    %io:format ("WIDTH3 => ~p~n", [{M,_F,_L,_ConvertMode}]),
-    M:widths().
-
-mkFontDescriptor(M, Embedded, I) ->
-    {X1,X2,X3,X4} = M:fontBBox(),
-    %% io:format("Flags FIXED to 6 ...~n"),
-    FontBBox = [X1,X2,X3,X4],
-    D0 = [{"Type",{name,"FontDescriptor"}},
-	  {"Ascent", M:ascender()},
-	  {"CapHeight", M:capHeight()},
-	  {"Descent", M:descender()},
-	  {"Flags", M:flags()},
-	  {"FontBBox",{array,FontBBox}},
-	  {"FontName",{name,M:fontName()}},
-	  {"ItalicAngle",M:italicAngle()},
-	  {"StemV",M:stemV()},
-	  {"XHeight",M:xHeight()}],
-    D = case Embedded of
-	    true ->
-		[{"FontFile", {ptr,I,0}}|D0];
-	    false ->
-		D0
-	end,
-    {dict, D}.
-
-%%          {{obj,8,0},
-%%           {dict,[{"Type",{name,"FontDescriptor"}},
-%%                  {"Ascent",890},
-%%                  {"CapHeight",707},
-%%                  {"Descent",65306},
-%%                  {"Flags",6},
-%%                  {"FontBBox",{array,[-100,-65311,1218,895]}},
-%%                  {"FontName",{name,"UtopiaMedium"}},
-%%                  {"ItalicAngle",0},
-%%                  {"StemV",80},
-%%                  {"XHeight",512},
-%%                  {"FontFile",{ptr,9,0}}]}},
-%%          {{obj,9,0},
-%%           {stream,94215,
-%%                   "stream_9_0_94215",
-%%                   [{"Length",94215},
-%%                    {"Length1",5750},
-%%                    {"Length2",87922},
-%%                    {"Length3",543}]}},
-
-mkFontFile(Handler) ->
-    {Len,Len1,Len2,Len3,Bin} = get_font_program(Handler),
-    {stream,{dict,[{"Length",Len},
-		   {"Length1",Len1},
-		   {"Length2",Len2},
-		   {"Length3",Len3}]},
-     Bin}.
-
-this_dir() ->
-    filename:dirname(code:which(?MODULE)).
-
-font_dir() ->
-    case code:priv_dir(erlguten) of
-    %% TODO: Don't think this is correct
-	{error, bad_name} ->
-        io:format(user,"no priv dir:~n",[]),
-	    filename:join(this_dir(), "../priv/fonts");
-	N ->
-	    filename:join(N, "fonts")
-    end.
-
-get_font_program(Handler) ->
-    File = filename:join(font_dir(), atom_to_list(Handler) ++ ".pfb"),
-    io:format(user,"reading Font from:~s~n",[File]),
-    P = eg_embed:parse_pfb(File),
-    case P of
-	[{_,L1,B1},{_,L2,B2},{_,L3,B3}|_] ->
-	    {L1+L2+L3,L1,L2,L3,list_to_binary([B1,B2,B3])};
-	_ ->
-	    error
-    end.
 
 mkInfo(I) ->
     {dict,[{"Creator",{string,I#info.creator}},

@@ -35,7 +35,7 @@
 
 -module(eg_pdf_obj).
 
--export([catalogue/2, info/1, destination/2, fonts/2]).
+-export([catalogue/2, info/1, destination/2, fonts/2, mk_fonts/5]).
 
 %% ============================================================================
 
@@ -123,43 +123,61 @@ destination(PageRef, {"FitBV", Left}) ->
 fonts(Fonts, Objects) ->
     Free0 = eg_pdf_lib:get_next_ref(Objects),
     Fonts1 = lists:map(fun(I) -> eg_font_map:handler(I) end, Fonts),
-    {_Free, FontsPtr, O1s}  = mk_fonts(Fonts1, Free0, [], []),
+    {_Free, FontsPtr, O1s}  = mk_fonts(Fonts1, Free0, [], [], undefined),
     {FontsPtr, eg_pdf_lib:store_object(O1s, Objects)}.
 
-mk_fonts([], I, Fs, Os) -> 
+mk_fonts(Handlers, I, Fs, E, 'utf8_to_latin2' = ConvertMode) ->
+    X = {{obj,I,0},
+         {dict, [
+            {"Differences", eg_latin2:gen_diffs ()},
+            {"Type", {name, "Encoding"}},
+            {"BaseEncoding", {name, "MacRomanEncoding"}}]}},
+    mk_fonts_(Handlers, I+1, Fs, lists:reverse ([X|lists:reverse (E)]), I, ConvertMode);
+mk_fonts(Handlers, I, Fs, E, ConvertMode) ->
+    mk_fonts_(Handlers, I, Fs, E, undefined, ConvertMode).
+
+mk_fonts_([], I, Fs, Os, _Enc, _ConvertMode) -> 
     A = {{obj,I,0},{dict,lists:map(fun({Alias, FontObj}) ->
 		      {Alias, {ptr,FontObj,0}}
 	      end, lists:reverse(Fs))}},
     {I+1, {ptr,I,0}, lists:reverse([A|Os])};
-mk_fonts([Handler|T], I, Fs, E) ->
+mk_fonts_([Handler|T], I, Fs, E, Enc, ConvertMode) ->
     %% io:format("I need the font:~p~n",[Handler]),
     Index = Handler:index(),
     Alias = "F" ++ eg_pdf_op:i2s(Index),
     case Handler:type() of
 	internal ->
-	    O = {{obj,I,0},mkFont(Handler)},
-	    mk_fonts(T, I+1, [{Alias,I}|Fs], [O|E]);
+      O = {{obj,I,0},mkFont(Handler, {ptr, Enc, 0}, ConvertMode)},
+	    mk_fonts_(T, I+1, [{Alias,I}|Fs], [O|E], Enc, ConvertMode);
 	{Index, pdf_builtin} ->
-	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index)},
+	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index, {ptr, Enc, 0}, ConvertMode)},
 	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, false, 0)},
-	    mk_fonts(T, I+2, [{Alias,I}|Fs], [O2,O1|E]);
+	    mk_fonts_(T, I+2, [{Alias,I}|Fs], [O2,O1|E], Enc, ConvertMode);
 	external ->
-	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index)},
+	    O1 = {{obj,I,0},   mkFont1(Handler, I+1, Index, {ptr, Enc, 0}, ConvertMode)},
 	    O2 = {{obj,I+1,0}, mkFontDescriptor(Handler, true,I+2)},
 	    O3 = {{obj,I+2,0}, mkFontFile(Handler)},
-	    mk_fonts(T, I+3, [{Alias,I}|Fs], [O3,O2,O1|E])
+	    mk_fonts_(T, I+3, [{Alias,I}|Fs], [O3,O2,O1|E], Enc, ConvertMode)
     end.
 
 %% mkFont is used for the 14  inbuilt fonts
-mkFont(FontHandler) ->
+mkFont(FontHandler, undefined, ConvertMode) ->
+    mkFont(FontHandler, {name, encoding(FontHandler)}, ConvertMode);
+mkFont(FontHandler, Enc, ConvertMode) ->
     Index = FontHandler:index(),
     Alias = "F" ++ eg_pdf_op:i2s(Index),
+    FirstChar = FontHandler:firstChar(),
+    LastChar = FontHandler:lastChar(),
+    Widths = make_width(FontHandler:encoding(),FontHandler,FirstChar,LastChar,ConvertMode),
     %% io:format("mkFont Alias=~s FontHandler=~p~n",[Alias, FontHandler]),
     {dict,[{"Type",{name,"Font"}},
 	   {"Subtype",{name,"Type1"}},
 	   {"Name",{name,Alias}},
 	   {"BaseFont",{name,FontHandler:fontName()}},
-	   {"Encoding",{name,encoding(FontHandler)}}]}.
+	   {"FirstChar",FirstChar},
+	   {"LastChar",LastChar},
+	   {"Widths", {array,Widths}},
+     {"Encoding",Enc}]}.
 
 encoding(M) ->
     %% Change the encoding to "MacRomanEncoding" except for
@@ -176,38 +194,50 @@ encoding(M) ->
     case M:encoding() of
 	S = "FontSpecific" ->
 	    S;
+%   	S = "AppleStandard" ->
+%   	    "MacRomanEncoding";
+%   	S = "AdobeStandardEncoding" ->
+%   	    S;
 	_ ->
 	    "MacRomanEncoding"
     end.
 
-mkFont1(M, FontDescriptorPrt, Index) ->
+mkFont1(M, FontDescriptorPrt, Index, undefined, ConvertMode) ->
+    mkFont1(M, FontDescriptorPrt, Index, {name, encoding (M)}, ConvertMode);
+mkFont1(M, FontDescriptorPrt, Index, Enc, ConvertMode) ->
     FirstChar = M:firstChar(),
     LastChar = M:lastChar(),
-    Widths = make_width(M:encoding(), M, FirstChar, LastChar),
+    Widths = make_width(M:encoding(),M,FirstChar,LastChar,ConvertMode),
     {dict,[{"Type",{name,"Font"}},
 	   {"Subtype",{name,"Type1"}},
 	   {"Name",{name,"F" ++ eg_pdf_op:i2s(Index)}},
 	   {"BaseFont",{name,M:fontName()}},
-	   {"Encoding",{name,encoding(M)}},
+	   {"Encoding",Enc},
 	   {"FirstChar",FirstChar},
 	   {"LastChar",LastChar},
 	   {"Widths", {array,Widths}},
 	   {"FontDescriptor",{ptr,FontDescriptorPrt,0}}]}.
 
-make_width("AdobeStandardEncoding", M, F, L) ->
+make_width(_, M, F, L, 'utf8_to_latin2' = _ConvertMode) ->
+    %io:format ("WIDTH1 => ~p~n", [{M,F,L,_ConvertMode}]),
+    Seq = lists:seq (F, L),
+    [ eg_latin2:fix_width (X, M) || X <- Seq ];
+make_width("AdobeStandardEncoding", M, F, L, _ConvertMode) ->
+    %io:format ("WIDTH2 => ~p~n", [{M,F,L,_ConvertMode}]),
     Seq = lists:seq(F,L),
     Fu = fun(unknown) -> 0;
 	   (X) -> X
 	end,
     Map = eg_convert:mac2pdf(Seq),
     [Fu(M:width(X)) || X <- Map];
-make_width(_, M, _, _) ->
+make_width(_, M, _F, _L, _ConvertMode) ->
+    %io:format ("WIDTH3 => ~p~n", [{M,_F,_L,_ConvertMode}]),
     M:widths().
 
 mkFontDescriptor(M, Embedded, I) ->
-    {X1, X2, X3, X4} = M:fontBBox(),
+    {X1,X2,X3,X4} = M:fontBBox(),
     %% io:format("Flags FIXED to 6 ...~n"),
-    FontBBox = [X1, X2, X3, X4],
+    FontBBox = [X1,X2,X3,X4],
     D0 = [{"Type",{name,"FontDescriptor"}},
 	  {"Ascent", M:ascender()},
 	  {"CapHeight", M:capHeight()},
@@ -254,16 +284,27 @@ mkFontFile(Handler) ->
 		   {"Length3",Len3}]},
      Bin}.
 
+this_dir() ->
+    filename:dirname(code:which(?MODULE)).
 
-font_dir() -> "../priv/src".
+font_dir() ->
+    case code:priv_dir(erlguten) of
+    %% TODO: Don't think this is correct
+       {error, bad_name} ->
+        io:format(user,"no priv dir:~n",[]),
+           filename:join(this_dir(), "../priv/fonts");
+       N ->
+           filename:join(N, "fonts")
+    end.
 
 get_font_program(Handler) ->
-    File = font_dir() ++ "/" ++ atom_to_list(Handler) ++ ".pfb",
-    %% io:format("reading Font from:~s~n",[File]),
+    File = filename:join(font_dir(), atom_to_list(Handler) ++ ".pfb"),
+    io:format(user,"reading Font from:~s~n",[File]),
     P = eg_embed:parse_pfb(File),
     case P of
-	[{_, L1, B1}, {_, L2, B2}, {_, L3, B3} | _] ->
-	    {L1 + L2 + L3, L1, L2, L3, erlang:list_to__binary([B1, B2, B3])};
-	_ ->
-	    error
+       [{_,L1,B1},{_,L2,B2},{_,L3,B3}|_] ->
+           {L1+L2+L3,L1,L2,L3,list_to_binary([B1,B2,B3])};
+       _ ->
+           error
     end.
+
