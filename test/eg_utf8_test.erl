@@ -17,8 +17,7 @@ erl2utf (S) ->
     case catch (Fun ()) of {'EXIT', _} -> S; R -> R end.
 
 make_pdf (Text) ->
-    {ok, Pdf} = weberp_pdf:create ("The Book", "Wild Animals",
-                                   "@ztmr", "wildlife animals"),
+    Pdf = eg_pdf:new (),
 
     eg_pdf:set_pagesize (Pdf, a4),
     eg_pdf:set_page (Pdf, 1),
@@ -44,7 +43,8 @@ make_pdf (Text) ->
     eg_pdf:set_font(Pdf, "Symbol", 14),
     eg_pdf_lib:moveAndShow (Pdf, 50, 100, Text),
 
-    {ok, PdfData} = weberp_pdf:finalize (Pdf),
+    {PdfData, _} = eg_pdf:export (Pdf),
+    eg_pdf:delete (Pdf),
     ok = file:write_file ("/tmp/xxfoo.pdf", [PdfData]).
 
 %% vim: fdm=syntax:fdn=3:tw=74:ts=2:syn=erlang
