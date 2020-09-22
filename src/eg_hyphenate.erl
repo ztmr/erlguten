@@ -1,3 +1,4 @@
+%% coding: latin-1
 %%==========================================================================
 %% Copyright (C) 2003 Joe Armstrong
 %%
@@ -23,7 +24,6 @@
 %% Author: Joe Armstrong <joe@sics.se>
 %% Purpose: Hyphenation program - adapted from TeX
 %%==========================================================================
-
 -module(eg_hyphenate).
 
 -export([partitions/2, 
